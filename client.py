@@ -20,9 +20,9 @@ async def receive_messages(reader, ui):
         kind = message["type"]
         if kind == "chat" and valid_alias(message.get("name")) and valid_text(message.get("text")):
             ui.message(message["name"], message["text"])
-        elif kind in {"notice", "error"} and isinstance(message.get("message"), str):
+        elif kind in {"notice", "error", "room_closed"} and isinstance(message.get("message"), str):
             ui.notice(message["message"])
-            if kind == "error":
+            if kind in {"error", "room_closed"}:
                 return
         else:
             raise ProtocolError("The server sent an unexpected message.")
@@ -37,6 +37,9 @@ async def send_messages(writer, ui):
         if text.strip() == "/quit":
             await asyncio.wait_for(send_frame(writer, {"type": "quit"}), timeout=5)
             return
+        if text.strip() == "/invite" and getattr(ui, "room_code", ""):
+            ui.invitation(ui.room_code, is_host=False)
+            continue
         if not valid_text(text):
             ui.notice("Use 1–4000 UTF-8 bytes of text, without control characters.")
             continue
@@ -52,6 +55,11 @@ async def run_client(arguments):
     reader, writer = await connect(arguments.host, arguments.port, name, password, arguments.ca)
     del password
     ui.connected(arguments.host, arguments.port)
+    await chat(reader, writer, ui)
+
+
+async def chat(reader, writer, ui):
+    """Run the composer and receiver together, closing both on either exit."""
     with patch_stdout():
         receiver = asyncio.create_task(receive_messages(reader, ui))
         sender = asyncio.create_task(send_messages(writer, ui))

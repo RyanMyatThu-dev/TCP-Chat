@@ -1,0 +1,20 @@
+# Project rules: public TLS chat is intentional; SSH remains administrator-only.
+rule encrypted_disk {
+    Resources.ChatInstance.Properties.BlockDeviceMappings[*].Ebs.Encrypted == true
+}
+rule metadata_and_cpu {
+    Resources.ChatInstance.Properties.MetadataOptions.HttpTokens == 'required'
+    Resources.ChatInstance.Properties.CreditSpecification.CPUCredits == 'standard'
+}
+rule restricted_ssh {
+    Resources.SecurityGroup.Properties.SecurityGroupIngress[0].FromPort == 22
+    Resources.SecurityGroup.Properties.SecurityGroupIngress[0].ToPort == 22
+    Resources.SecurityGroup.Properties.SecurityGroupIngress[0].CidrIp.Ref == 'AdminCidr'
+    Parameters.AdminCidr.AllowedPattern == /.*\/32$/
+}
+rule only_chat_public {
+    Resources.SecurityGroup.Properties.SecurityGroupIngress[1].FromPort == 5000
+    Resources.SecurityGroup.Properties.SecurityGroupIngress[1].ToPort == 5000
+    let ingress_count = count(Resources.SecurityGroup.Properties.SecurityGroupIngress[*])
+    %ingress_count == 2
+}

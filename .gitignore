@@ -7,3 +7,11 @@ certs/
 secrets/
 *.key
 *.pem
+build/
+dist/
+*.egg-info/
+
+node_modules/
+web/*.tsbuildinfo
+web/test-results/
+web/playwright-report/

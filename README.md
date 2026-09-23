@@ -1,8 +1,8 @@
 # NEON / CHAT
 
 A Python TCP chat app with a neo-cyberpunk terminal interface. Connect multiple
-clients, choose an alias, and chat in a password-protected room with cyan and
-magenta accents. Connections use verified TLS encryption.
+clients, create a temporary room, and invite friends with a code. The interface
+uses cyan and magenta accents. Connections use verified TLS encryption.
 
 ```text
   ◈  NEON / CHAT    TCP TERMINAL
@@ -19,29 +19,62 @@ magenta accents. Connections use verified TLS encryption.
 
 *Illustrative terminal preview; colors depend on your terminal.*
 
+[Open the animated installation guide](https://ryanmyatthu-dev.github.io/TCP-Chat/)
+
+## Install and chat
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) once, then:
+
+```bash
+uv tool install --python 3.12 https://github.com/RyanMyatThu-dev/TCP-Chat/archive/refs/heads/main.zip
+```
+
+Open a new terminal if `neon-chat` is not on your PATH (or run `uv tool update-shell`).
+This installs the command in its own environment; no repository checkout is needed.
+The package is distributed from this repository, not published on PyPI.
+
+Create a room:
+
+```bash
+neon-chat host
+```
+
+Choose your alias. The app displays a private invitation such as `ABCD-1234-EFGH`.
+Your friends install the same app and run the command you share:
+
+```bash
+neon-chat join ABCD-1234-EFGH
+```
+
+Anyone with the app can create a room. No AWS account, address, certificate file,
+or separate room password is needed. The code grants access: share it privately.
+The service address and public trust certificate are included in the package.
+The AWS service must be running; friends cannot start the instance themselves.
+
+- `/invite` shows the invitation again.
+- `/quit`, Ctrl+D, or Ctrl+C leaves.
+- When the host disconnects, guests disconnect and the code expires.
+- Guest departures leave the room open. A new host session gets a new code.
+- `--name Raven` skips the alias prompt; `NO_COLOR=1 neon-chat host` disables color.
+
+To update, rerun the install command with `--reinstall`.
+
 ## Features
 
-- **Shared chat:** the server broadcasts messages to connected clients, including
-  the sender.
-- **Encrypted connections:** TLS 1.2 or newer with certificate and hostname
-  verification; no plaintext fallback.
-- **Room password:** a masked, history-free login prompt; only authenticated
-  clients receive messages. Passwords must be at least 16 characters on the server.
-- **User aliases:** choose a display name before entering the room.
-  Aliases use 1–24 letters, numbers, underscores, or hyphens and are unique while
-  connected (case-insensitive).
-- **Presence notices:** see when someone joins or when the server detects a
-  closed connection.
-- **Neon interface:** styled welcome screen, highlighted senders, local receive
-  timestamps, and a compact status bar on compatible terminals.
-- **Live input:** incoming messages appear above the composer while you type.
-  Submitted input clears so the server echo supplies a single transcript entry.
-- **Input history:** use Up/Down to recall earlier input and Enter to send.
-- **Clean exits:** `/quit` or Ctrl+D leaves; a closed server connection cancels
-  the active input prompt.
-- **Protocol safeguards:** length-prefixed messages, bounded queues, login
-  timeouts, and limits on login attempts and message bursts.
-- **Monochrome option:** prefix your client command with `NO_COLOR=1`.
+- **Temporary invitation rooms:** independent rooms, cryptographically random
+  12-character codes, and automatic cleanup when their host leaves.
+- **Verified TLS:** encrypted client/server connections with certificate and IP
+  verification. The persistent authority allows server certificates to renew
+  without redistributing files to friends.
+- **Neon terminal:** cyan/magenta theme, receive timestamps, presence notices,
+  highlighted senders, and a status bar.
+- **Live composer:** incoming messages appear while you type; submitted input
+  clears so each message appears once. Up/Down recalls your input.
+- **Aliases:** 1–24 letters, numbers, underscores, or hyphens; case-insensitive
+  uniqueness within each room.
+- **Bounded service:** room, connection, message, and per-IP login limits.
+- **Learning mode:** the original shared-password client remains available for
+  local networking exercises.
 
 ## Run locally
 
@@ -72,79 +105,57 @@ seven days, and is trusted explicitly through `--ca`. The helper refuses to
 overwrite an existing certificate or key. Use a new `--out` directory to renew,
 then update the server and client paths.
 
-For friends connecting over the internet, follow the
-[AWS EC2 deployment guide](deploy/AWS.md). A reproducible
-[CloudFormation template](deploy/stack.json) prepares the infrastructure and
-bootstraps the room. The Singapore stack was deployed and externally verified
-on **September 23, 2026**: TLS verification, rejected wrong passwords, two-client
-messaging, and `/quit` all passed. Availability follows the session lifecycle;
-the instance automatically stops after roughly three hours.
+For the hosted command, use the installation steps above. Operators can follow
+[the AWS deployment guide](deploy/AWS.md) to manage the service.
 
 ## AWS architecture
 
-The hosting target is **Asia Pacific (Singapore), `ap-southeast-1`**, with one
-server that runs only during chat sessions.
-
 ```mermaid
 flowchart TD
-    Clients[You and friends: CLI clients] -->|TLS on TCP 5000| Internet[Internet gateway]
-    Admin[Your computer] -->|SSH on TCP 22| Internet
-    subgraph AWS[Singapore: ap-southeast-1]
-        subgraph VPC[Dedicated VPC and one public subnet]
-            Internet --> SG[Security group: explicit source IPs]
-            SG --> EC2[t4g.small: Ubuntu 24.04 ARM64]
-            EC2 --- Disk[8 GiB encrypted gp3 disk]
-        end
+    Clients[Installed neon-chat commands] -->|Verified TLS / TCP 5000| Address[Stable Elastic IP]
+    Address --> Firewall[Public chat ingress / restricted admin SSH]
+    subgraph Singapore[Singapore: ap-southeast-1]
+        Firewall --> Server[One t4g.small / Ubuntu ARM64]
+        Server --> Rooms[Isolated temporary rooms in memory]
+        Server --- Disk[8 GiB encrypted gp3 / persistent TLS authority]
     end
 ```
 
 | Component | Configuration |
 | --- | --- |
-| Compute | One `t4g.small`, standard CPU credit mode |
-| Operating system | Ubuntu 24.04 ARM64, resolved from Canonical's public AMI parameter |
-| Storage | 8 GiB encrypted gp3 root disk, deleted on instance termination |
-| Network | Public subnet, internet gateway, auto-assigned public IPv4 |
-| Firewall | SSH from the administrator's `/32`; chat initially from the same IP, with friends added explicitly |
-| Server | Pinned application revision, systemd service, TLS, shared room password |
-| Secrets | Random room password and private key on the instance; neither is a stack output |
-| Session limit | Instance automatically stops about three hours after its timer starts on each boot |
+| Compute | One `t4g.small`, standard CPU credits, Ubuntu 24.04 ARM64 |
+| Network | Dedicated VPC, public subnet, internet gateway, stable Elastic IP |
+| Firewall | Public TCP 5000 for invitation rooms; TCP 22 only from administrator `/32` |
+| Identity | Private CA/key on the instance; public CA bundled with installed clients |
+| TLS renewal | Seven-day server certificate renewed on every service start |
+| Lifecycle | Host departure closes its room; server stop closes every room |
+| Runtime | Instance auto-stops about three hours after its timer starts on each boot |
 
-The template creates no load balancer, NAT gateway, database, or Elastic IP.
-Messages stay in memory. This single-server design accepts downtime if the
-instance stops or fails.
-
-At startup, the room generates a seven-day certificate for the instance's current
-public IP. Retrieve its **public certificate** again after a restart; the private
-key stays on the instance. A new public IP may be assigned after a stop/start.
-The shared password persists on the encrypted disk until you rotate it or delete
-the instance. The AWS guide explains retrieving it privately and inviting friends.
+No load balancer, NAT gateway, database, or message persistence. A single server
+means downtime when it stops or fails. The authority and address survive normal
+stop/start, so clients keep working without reconfiguration when service resumes.
+Deleting the stack deletes the disk and releases the address; clients must be
+updated after redeployment to a different address or authority.
 
 ### Running costs
 
-Planning estimates checked September 23, 2026, for one server, one public IPv4,
-an 8 GiB disk retained all month, and light text traffic:
+Approximate monthly costs for light text traffic, a retained address and 8 GiB disk:
 
-| Runtime per month | With T4g compute trial | Without compute trial, at estimated current rates |
+| Runtime | With T4g compute trial | Without compute trial |
 | --- | --- | --- |
-| 100 hours | About $1–$2 | About $3–$4 |
-| 730 hours | About $4–$5 | About $20 |
+| 100 hours | $4–$5 | $6–$7 |
+| 730 hours | $4–$5 | About $20 |
 
-AWS currently advertises 750 aggregate `t4g.small` instance hours per month
-through **December 31, 2026**, including Singapore. Storage and public IPv4 are
-separate charges. IPv4 costs $0.005/hour; allow roughly $1/month for this disk.
-Estimates exclude taxes, excess transfer, and optional resources. Promotional
-credits may cover eligible usage while valid; they do not make hosting free
-indefinitely. Confirm the regional quote and eligibility before launch.
-
-Stop the **EC2 instance** after chatting; `/quit` only disconnects a client.
-Storage still accrues charges while stopped. The three-hour timer is a runtime
-guard, not a billing cap. Configure a $5 budget alert separately; alerts are not
+The stable IPv4 costs **$0.005/hour (~$3.65/month), even while stopped**;
+allow roughly $1/month for disk. AWS advertises 750 aggregate `t4g.small` hours
+monthly through December 31, 2026, including Singapore. Check eligibility and
+credit expiry in Billing. Estimates exclude taxes, excess transfer and optional
+resources. The timer limits runtime, not total spending. Budget alerts are not
 created by the template and do not automatically stop spending.
 
 Sources: [AWS T4g trial](https://aws.amazon.com/ec2/faqs/),
 [IPv4 pricing](https://aws.amazon.com/vpc/pricing/),
-[EBS pricing](https://aws.amazon.com/ebs/pricing/),
-[Singapore compute estimate](https://calculator.holori.com/aws/ec2/t4g.small?os=Linux&region=ap-southeast-1&upfront=no-upfront).
+[EBS pricing](https://aws.amazon.com/ebs/pricing/).
 
 ## Our development process
 
@@ -160,7 +171,8 @@ and then improving the experience around them.
 | Visual refinement | Clear submitted input to avoid showing it twice | Implemented |
 | Protocol reliability | Length-prefixed JSON, bounded messages, and clean disconnects | Implemented |
 | Private room access | Verified TLS, shared password, and login/message limits | Implemented; local integration tests |
-| AWS hosting | Singapore CloudFormation stack, automatic setup, and session auto-stop | Deployed; external TLS, authentication, chat, and quit checks passed |
+| AWS hosting | Singapore CloudFormation stack, stable address, and session auto-stop | Deployed |
+| Simple invitations | Installable command, isolated rooms, host/join codes | Implemented; automated room lifecycle tests |
 
 The interface lives in `chat_ui.py`. The initial visual updates left the socket
 code unchanged. The security phase adds `transport.py` for TLS/login and
@@ -176,12 +188,13 @@ We keep supporting learning notes in [learning/lessons](learning/lessons), with 
 
 This is a small friends-only prototype, not an audited public chat service.
 TLS protects traffic between clients and the server; the server can read the
-messages, so this is not end-to-end encryption. Anyone with the shared password
-can join and choose an available alias. There are no permanent user accounts,
+messages, so this is not end-to-end encryption. Anyone with a room code can join that room and choose an available alias.
+There is no permanent identity verification or room ownership recovery. There are no permanent user accounts,
 automatic reconnection, or saved chat history. Terminal output can still be
 retained by participants.
 
-The server allows 32 connections after TLS negotiation, 10 login attempts per IP
+The server allows 8 simultaneous invitation rooms, 3 creations per IP per minute,
+32 connections after TLS negotiation, and 10 login attempts per IP
 per minute (including successful attempts), and 20 messages per client per ten
 seconds. Messages can contain at most 4000 UTF-8 bytes. These limits are not
 comprehensive denial-of-service protection. Old plaintext clients are incompatible
@@ -191,7 +204,9 @@ with this protocol; everyone needs the updated client.
 
 ```text
 client.py        Login, concurrent sending/receiving, and clean exits
-server.py        Authenticated room, limits, and broadcasting
+server.py        Isolated rooms, host lifecycle, limits, and broadcasting
+neon_chat/       Installed command, service address, and public trust certificate
+room_codes.py    Random invitation codes and normalization
 chat_ui.py       Terminal theme, prompts, and message rendering
 transport.py     Verified TLS contexts and authentication handshake
 framing.py       Bounded, length-prefixed JSON messages
@@ -217,3 +232,21 @@ python test_clients.py --host localhost --ca certs/server.crt
 
 Enter the room password when prompted. Repeated runs share the per-IP login
 budget; wait one minute if it is exhausted.
+
+## React installation guide
+
+The guide lives in `web/`: React, TypeScript, and Vite; solid-color styling,
+hover interactions, cursor tracking, and reduced-motion support. It builds static
+files to `docs/` for GitHub Pages, independently of the temporary AWS chat server.
+
+```bash
+cd web
+npm ci
+npm run dev
+npm run build
+npm exec playwright install chromium
+npm test
+```
+
+To publish an update, run `npm run build:pages` from `web/` and commit `docs/`
+with the source. GitHub Pages serves the main branch's `/docs` directory.

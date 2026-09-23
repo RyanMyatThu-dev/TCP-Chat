@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from framing import MAX_FRAME_BYTES, ProtocolError, encode_frame, read_frame, send_frame
 from server import ChatServer, LoginLimiter, Peer
-from transport import AuthenticationError, client_context, close_writer, connect, server_context
+from transport import AuthenticationError, client_context, close_writer, connect, server_context, authenticate
 
 PASSWORD = "a-long-test-room-password"
 
@@ -280,6 +280,82 @@ class TLSTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 client.cancel()
                 await asyncio.gather(client, return_exceptions=True)
+
+
+    async def room_login(self, action, name, code=None):
+        request = {'type': action, 'name': name}
+        if code is not None:
+            request['code'] = code
+        reader, writer, response = await authenticate('localhost', self.port, request, self.cert)
+        self.writers.append(writer)
+        return reader, writer, response['code']
+
+    async def test_private_rooms_and_host_lifecycle(self):
+        first, host1, code1 = await self.room_login('create', 'Host')
+        await self.receive(first)
+        second, host2, code2 = await self.room_login('create', 'Host')
+        await self.receive(second)
+        self.assertNotEqual(code1, code2)
+        guest1, writer1, _ = await self.room_login('join', 'Guest', code1.lower())
+        await self.receive(first)
+        await self.receive(guest1)
+        guest2, writer2, _ = await self.room_login('join', 'Guest', code2)
+        await self.receive(second)
+        await self.receive(guest2)
+        await send_frame(host1, {'type': 'chat', 'text': 'room one only'})
+        self.assertEqual((await self.receive(first))['text'], 'room one only')
+        self.assertEqual((await self.receive(guest1))['text'], 'room one only')
+        with self.assertRaises(TimeoutError):
+            await asyncio.wait_for(read_frame(second), .05)
+        with self.assertRaises(TimeoutError):
+            await asyncio.wait_for(read_frame(guest2), .05)
+        await send_frame(host1, {'type': 'quit'})
+        self.assertEqual((await self.receive(guest1))['type'], 'room_closed')
+        self.assertIsNone(await self.receive(guest1))
+        with self.assertRaisesRegex(AuthenticationError, 'invalid or expired'):
+            await self.room_login('join', 'Late', code1)
+        await send_frame(host2, {'type': 'chat', 'text': 'room two still works'})
+        self.assertEqual((await self.receive(second))['text'], 'room two still works')
+        self.assertEqual((await self.receive(guest2))['text'], 'room two still works')
+
+    async def test_guest_quit_does_not_close_room(self):
+        host, host_writer, code = await self.room_login('create', 'Host')
+        await self.receive(host)
+        guest, writer, _ = await self.room_login('join', 'Guest', code)
+        await self.receive(host)
+        await self.receive(guest)
+        await send_frame(writer, {'type': 'quit'})
+        self.assertEqual((await self.receive(host))['message'], 'Guest has left the chat')
+        await self.room_login('join', 'Replacement', code)
+
+    async def test_room_limit_and_create_throttle(self):
+        with patch('server.MAX_ROOMS', 1):
+            await self.room_login('create', 'Host')
+            with self.assertRaisesRegex(AuthenticationError, 'occupied'):
+                await self.room_login('create', 'Another')
+        self.room.create_limiter = LoginLimiter(attempts=1)
+        await self.room_login('create', 'Second')
+        with self.assertRaisesRegex(AuthenticationError, 'Too many new rooms'):
+            await self.room_login('create', 'Third')
+
+    async def test_room_duplicate_alias_and_invalid_codes(self):
+        await self.room_login('create', 'Host')
+        code = next(iter(self.room.rooms))
+        with self.assertRaisesRegex(AuthenticationError, 'already in use'):
+            await self.room_login('join', 'HOST', code)
+        for value in ['bad-code', '0000-0000-0000', None, ['invalid']]:
+            with self.subTest(code=value), self.assertRaises(AuthenticationError):
+                await self.room_login('join', 'Guest', value)
+
+    async def test_host_connection_loss_expires_code(self):
+        host, writer, code = await self.room_login('create', 'Host')
+        await self.receive(host)
+        guest, _, _ = await self.room_login('join', 'Guest', code)
+        await self.receive(guest)
+        await close_writer(writer)
+        self.assertEqual((await self.receive(guest))['type'], 'room_closed')
+        with self.assertRaises(AuthenticationError):
+            await self.room_login('join', 'Late', code)
 
 
 if __name__ == '__main__':

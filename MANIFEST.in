@@ -1,0 +1,7 @@
+prune secrets
+prune certs
+prune .git
+prune .venv
+prune output
+prune tmp
+global-exclude *.key *.pem *.pyc

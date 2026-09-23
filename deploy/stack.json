@@ -1,6 +1,6 @@
 {
   "AWSTemplateFormatVersion": "2010-09-09",
-  "Description": "NEON CHAT: one t4g.small, Ubuntu ARM64, TLS, restricted ingress, and three-hour auto-stop. Deploy in ap-southeast-1.",
+  "Description": "NEON CHAT: Singapore TLS invitation rooms, stable Elastic IP, restricted SSH, and three-hour auto-stop.",
   "Parameters": {
     "AdminCidr": {
       "Type": "String",
@@ -10,7 +10,7 @@
     "ChatCidr": {
       "Type": "String",
       "Default": "",
-      "Description": "Optional IPv4 CIDR for chat. Empty restricts chat to AdminCidr; add friends individually later.",
+      "Description": "Chat ingress CIDR. Use 0.0.0.0/0 for public invitation rooms; empty restricts access to AdminCidr.",
       "AllowedPattern": "(?:(?:\\d{1,3}\\.){3}\\d{1,3}/(?:[0-9]|[12][0-9]|3[0-2]))?"
     },
     "KeyPairName": {
@@ -202,6 +202,15 @@
             "Value": "neon-chat"
           }
         ]
+      },
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Anyone may create or join invitation rooms on TCP 5000; SSH is administrator-only.",
+          "must": [
+            "Keep SSH restricted to AdminCidr /32.",
+            "Public chat ingress is intentional for code-only onboarding."
+          ]
+        }
       }
     },
     "ChatInstance": {
@@ -281,32 +290,7 @@
                 "    file.write(secrets.token_urlsafe(24))",
                 "PY",
                 "",
-                "# Refresh the certificate for the current public IP each time the room starts.",
-                "cat > /usr/local/bin/neon-chat-session <<'SH'",
-                "#!/bin/bash",
-                "set -euo pipefail",
-                "app_dir=/home/ubuntu/TCP-Chat",
-                "token=$(curl --fail --silent --show-error --max-time 5 -X PUT \\",
-                "  -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' \\",
-                "  http://169.254.169.254/latest/api/token)",
-                "public_ip=$(curl --fail --silent --show-error --max-time 5 \\",
-                "  -H \"X-aws-ec2-metadata-token: $token\" \\",
-                "  http://169.254.169.254/latest/meta-data/public-ipv4)",
-                "session_dir=$(mktemp -d \"$app_dir/certs/session.XXXXXXXX\")",
-                "\"$app_dir/.venv/bin/python\" \"$app_dir/tools/generate_certificate.py\" \\",
-                "  --host \"$public_ip\" --out \"$session_dir\"",
-                "ln -sfn \"$session_dir/server.crt\" \"$app_dir/certs/server.crt\"",
-                "ln -sfn \"$session_dir/server.key\" \"$app_dir/certs/server.key\"",
-                "SH",
-                "chmod 755 /usr/local/bin/neon-chat-session",
-                "install -m 644 \"$app_dir/deploy/neon-chat.service\" /etc/systemd/system/neon-chat.service",
-                "install -d /etc/systemd/system/neon-chat.service.d",
-                "cat > /etc/systemd/system/neon-chat.service.d/session.conf <<'UNIT'",
-                "[Service]",
-                "ExecStartPre=/usr/local/bin/neon-chat-session",
-                "# Allow only certificate renewal within the otherwise read-only service filesystem.",
-                "ReadWritePaths=/home/ubuntu/TCP-Chat/certs",
-                "UNIT",
+                "bash \"$app_dir/deploy/install-service.sh\"",
                 "",
                 "# Powering down this EBS-backed instance stops it, as configured in CloudFormation.",
                 "cat > /etc/systemd/system/neon-chat-autostop.service <<'UNIT'",
@@ -344,6 +328,46 @@
             "Value": "neon-chat"
           }
         ]
+      },
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Single low-cost temporary room service with persistent TLS authority.",
+          "must": [
+            "Keep encrypted disk and authority across normal restarts.",
+            "UserData runs only on first boot; upgrades require install-service.sh."
+          ]
+        }
+      }
+    },
+    "ServiceAddress": {
+      "Type": "AWS::EC2::EIP",
+      "DependsOn": "GatewayAttachment",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Installed clients need an address stable across EC2 stop/start.",
+          "must": [
+            "Preserve this address while published clients use it.",
+            "IPv4 is billed even when the instance is stopped."
+          ]
+        }
+      },
+      "Properties": {
+        "Domain": "vpc",
+        "InstanceId": {
+          "Ref": "ChatInstance"
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${AWS::StackName}-service"
+            }
+          },
+          {
+            "Key": "Project",
+            "Value": "neon-chat"
+          }
+        ]
       }
     }
   },
@@ -355,12 +379,9 @@
     },
     "PublicIp": {
       "Value": {
-        "Fn::GetAtt": [
-          "ChatInstance",
-          "PublicIp"
-        ]
+        "Ref": "ServiceAddress"
       },
-      "Description": "Launch-time address; query EC2 again after a stop/start."
+      "Description": "Stable service address; IPv4 charges continue while stopped."
     },
     "SecurityGroupId": {
       "Value": {
@@ -369,11 +390,16 @@
     },
     "SshCommand": {
       "Value": {
-        "Fn::Sub": "ssh -i /path/to/key.pem ubuntu@${ChatInstance.PublicIp}"
+        "Fn::Sub": "ssh -i /path/to/key.pem ubuntu@${ServiceAddress}"
       }
     },
     "Readiness": {
       "Value": "Stack completion means infrastructure exists. Verify cloud-init status and neon-chat service over SSH."
+    }
+  },
+  "Metadata": {
+    "AWSToolsMetrics": {
+      "AWSAgentToolkit": "aws-cloudformation@3"
     }
   }
 }

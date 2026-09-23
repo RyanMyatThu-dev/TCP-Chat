@@ -12,6 +12,7 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.validation import Validator
 
 from framing import valid_alias
+from room_codes import display_code
 
 
 STYLE = Style.from_dict({
@@ -40,6 +41,7 @@ class ChatUI:
         )
         self.user_name = ""
         self.endpoint = ""
+        self.room_code = ""
 
     def write(self, *fragments):
         print_formatted_text(
@@ -95,6 +97,22 @@ class ChatUI:
                    ("class:muted", "  /  "),
                    ("class:accent", clean(self.user_name)))
         self.write(("class:muted", "  Enter to send · /quit or Ctrl+D to leave."))
+        self.rule()
+        print()
+
+    def invitation(self, code, is_host=True):
+        self.room_code = display_code(code)
+        self.endpoint = f"ROOM {self.room_code}"
+        self.rule()
+        self.write(("class:accent", "  ROOM  "), ("class:brand", self.room_code))
+        if is_host:
+            self.write(("class:muted", "  Invite friends with: "),
+                       ("class:text", f"neon-chat join {self.room_code}"))
+            self.write(("class:muted", "  Keep this code private. Your room closes when you leave."))
+        else:
+            self.write(("class:success", "  Connected securely. "),
+                       ("class:muted", f"Share: neon-chat join {self.room_code}"))
+        self.write(("class:muted", "  Enter to send · /invite shows code · /quit leaves"))
         self.rule()
         print()
 

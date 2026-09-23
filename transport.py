@@ -35,6 +35,14 @@ async def close_writer(writer):
 
 async def connect(host, port, name, password, cafile=None):
     """Never send credentials until certificate and hostname verification pass."""
+    reader, writer, _ = await authenticate(
+        host, port, {"type": "auth", "name": name, "password": password}, cafile
+    )
+    return reader, writer
+
+
+async def authenticate(host, port, request, cafile=None):
+    """Open a verified TLS connection and authenticate a legacy or room request."""
     reader, writer = await asyncio.wait_for(
         asyncio.open_connection(
             host, port, ssl=client_context(cafile), server_hostname=host,
@@ -43,7 +51,7 @@ async def connect(host, port, name, password, cafile=None):
     )
     try:
         await asyncio.wait_for(
-            send_frame(writer, {"type": "auth", "name": name, "password": password}),
+            send_frame(writer, request),
             timeout=CONNECT_TIMEOUT,
         )
         response = await asyncio.wait_for(read_frame(reader), timeout=CONNECT_TIMEOUT)
@@ -54,7 +62,7 @@ async def connect(host, port, name, password, cafile=None):
             raise AuthenticationError(detail if isinstance(detail, str) else "Room access denied.")
         if response["type"] != "auth_ok":
             raise ProtocolError("Unexpected authentication response.")
-        return reader, writer
+        return reader, writer, response
     except BaseException:
         await close_writer(writer)
         raise

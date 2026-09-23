@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neon-tcp-chat"
+version = "0.2.0"
+description = "Private, temporary terminal chat rooms with neon styling"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["prompt_toolkit>=3.0.43,<4"]
+
+[project.scripts]
+neon-chat = "neon_chat.cli:main"
+
+[tool.setuptools]
+packages = ["neon_chat"]
+py-modules = ["client", "chat_ui", "transport", "framing", "room_codes"]
+
+[tool.setuptools.package-data]
+neon_chat = ["service.json", "service-ca.crt"]

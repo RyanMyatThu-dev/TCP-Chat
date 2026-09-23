@@ -1,4 +1,4 @@
-"""Ephemeral, password-protected TCP chat room over TLS."""
+"""Ephemeral invitation-code rooms and a legacy password room over TLS."""
 
 import argparse
 import asyncio
@@ -12,12 +12,14 @@ from pathlib import Path
 import time
 
 from framing import ProtocolError, read_frame, send_frame, valid_alias, valid_text
+from room_codes import new_code, normalize_code, display_code
 from transport import close_writer, server_context
 
 AUTH_TIMEOUT = 10
 WRITE_TIMEOUT = 5
 MAX_CLIENTS = 32
 MAX_PENDING_MESSAGES = 64
+MAX_ROOMS = 8
 
 
 class LoginLimiter:
@@ -47,6 +49,14 @@ class Peer:
     name: str
     writer: asyncio.StreamWriter
     queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(MAX_PENDING_MESSAGES))
+    room: object = None
+    is_host: bool = False
+
+
+@dataclass(eq=False)
+class Room:
+    code: str
+    closing: bool = False
 
 
 class ChatServer:
@@ -59,14 +69,45 @@ class ChatServer:
         self.connections = set()
         self.tasks = set()
         self.limiter = LoginLimiter()
+        self.rooms = {}
+        self.create_limiter = LoginLimiter(attempts=3, window=60)
 
-    def broadcast(self, message):
+    def broadcast(self, message, room=None):
         for peer in tuple(self.clients.values()):
+            if peer.room is not room:
+                continue
             try:
                 peer.queue.put_nowait(message)
             except asyncio.QueueFull:
                 # A slow client must not stall the room or grow memory unboundedly.
                 peer.writer.close()
+
+    async def close_room(self, room):
+        room.closing = True
+        self.rooms.pop(room.code, None)
+
+        async def end(peer):
+            try:
+                await asyncio.wait_for(send_frame(peer.writer, {
+                    "type": "room_closed", "message": "The host left. This room and its invitation code have expired."
+                }), WRITE_TIMEOUT)
+            except (OSError, TimeoutError):
+                pass
+            finally:
+                peer.writer.close()
+
+        await asyncio.gather(*(end(peer) for peer in tuple(self.clients.values()) if peer.room is room))
+
+    def password_matches(self, password):
+        if not isinstance(password, str):
+            return False
+        try:
+            encoded = password.encode("utf-8")
+        except UnicodeError:
+            return False
+        return len(encoded) <= 1024 and hmac.compare_digest(
+            hashlib.sha256(encoded).digest(), self.password_digest
+        )
 
     async def deliver(self, peer):
         try:
@@ -84,6 +125,7 @@ class ChatServer:
         self.tasks.add(task)
         peer = None
         sender = None
+        room = None
         try:
             if len(self.connections) >= MAX_CLIENTS:
                 await self.reject(writer, "Room is full. Try again later.")
@@ -96,39 +138,53 @@ class ChatServer:
             auth = await asyncio.wait_for(read_frame(reader), AUTH_TIMEOUT)
             if auth is None:
                 return
-            if auth["type"] != "auth":
-                await self.reject(writer, "Authenticate before sending chat messages.")
-                return
-            password = auth.get("password")
-            if not isinstance(password, str):
-                await self.reject(writer, "Room access denied.")
-                return
-            try:
-                encoded_password = password.encode("utf-8")
-            except UnicodeError:
-                await self.reject(writer, "Room access denied.")
-                return
-            if len(encoded_password) > 1024 or not hmac.compare_digest(
-                hashlib.sha256(encoded_password).digest(), self.password_digest
-            ):
-                await self.reject(writer, "Room access denied.")
-                return
             name = auth.get("name")
-            # Do not retain the plaintext password after authentication.
-            del auth, password, encoded_password
             if not valid_alias(name):
                 await self.reject(writer, "Alias must be 1–24 letters, numbers, underscores, or hyphens.")
                 return
-            key = name.casefold()
+            is_host = auth["type"] == "create"
+            if auth["type"] == "auth":
+                # Legacy password-based client remains available for local learning.
+                if not self.password_matches(auth.get("password")):
+                    await self.reject(writer, "Room access denied.")
+                    return
+            elif is_host:
+                if not self.create_limiter.allow(ip):
+                    await self.reject(writer, "Too many new rooms. Wait one minute before creating another.")
+                    return
+                if len(self.rooms) >= MAX_ROOMS:
+                    await self.reject(writer, "All rooms are occupied. Try again when a host leaves.")
+                    return
+                code = new_code()
+                while code in self.rooms:
+                    code = new_code()
+                room = Room(code)
+                self.rooms[code] = room
+            elif auth["type"] == "join":
+                try:
+                    room = self.rooms.get(normalize_code(auth.get("code")))
+                except ValueError:
+                    room = None
+                if room is None or room.closing:
+                    await self.reject(writer, "Room code is invalid or expired. Ask the host for a new invitation.")
+                    return
+            else:
+                await self.reject(writer, "Create or join a room before sending messages.")
+                return
+            del auth
+            key = (room.code if room else "", name.casefold())
             if key in self.clients:
                 await self.reject(writer, "That alias is already in use. Choose another.")
                 return
-            peer = Peer(name, writer)
+            peer = Peer(name, writer, room=room, is_host=is_host)
             # Reserve the alias before yielding to another connection.
             self.clients[key] = peer
-            await asyncio.wait_for(send_frame(writer, {"type": "auth_ok"}), WRITE_TIMEOUT)
+            response = {"type": "auth_ok"}
+            if room:
+                response.update(code=display_code(room.code), is_host=is_host)
+            await asyncio.wait_for(send_frame(writer, response), WRITE_TIMEOUT)
             sender = asyncio.create_task(self.deliver(peer))
-            self.broadcast({"type": "notice", "message": f"{name} has joined the chat"})
+            self.broadcast({"type": "notice", "message": f"{name} has joined the chat"}, room)
             recent_messages = []
             while True:
                 message = await read_frame(reader)
@@ -144,7 +200,7 @@ class ChatServer:
                     break
                 recent_messages.append(now)
                 # Sender identity always comes from authentication, never chat payloads.
-                self.broadcast({"type": "chat", "name": name, "text": message["text"]})
+                self.broadcast({"type": "chat", "name": name, "text": message["text"]}, room)
         except (ProtocolError, TimeoutError):
             try:
                 await self.reject(writer, "Invalid message or login timed out.")
@@ -154,8 +210,11 @@ class ChatServer:
             pass
         finally:
             if peer is not None:
-                self.clients.pop(peer.name.casefold(), None)
-                self.broadcast({"type": "notice", "message": f"{peer.name} has left the chat"})
+                self.clients.pop((room.code if room else "", peer.name.casefold()), None)
+                if peer.is_host:
+                    await self.close_room(room)
+                elif room is None or not room.closing:
+                    self.broadcast({"type": "notice", "message": f"{peer.name} has left the chat"}, room)
             if sender is not None:
                 sender.cancel()
                 await asyncio.gather(sender, return_exceptions=True)
@@ -177,7 +236,7 @@ async def serve(arguments, password):
         room.handle_client, arguments.host, arguments.port, ssl=context,
         ssl_handshake_timeout=AUTH_TIMEOUT,
     )
-    print(f"NEON / CHAT listening on {arguments.host}:{arguments.port} · TLS · password required", flush=True)
+    print(f"NEON / CHAT listening on {arguments.host}:{arguments.port} · TLS · invitation rooms", flush=True)
     try:
         async with listener:
             await listener.serve_forever()
