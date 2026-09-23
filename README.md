@@ -73,9 +73,78 @@ overwrite an existing certificate or key. Use a new `--out` directory to renew,
 then update the server and client paths.
 
 For friends connecting over the internet, follow the
-[AWS EC2 deployment guide](deploy/AWS.md). It covers firewall rules, certificates,
-password setup, a systemd service, and ending the session. AWS deployment has not
-been performed automatically.
+[AWS EC2 deployment guide](deploy/AWS.md). A reproducible
+[CloudFormation template](deploy/stack.json) prepares the infrastructure and
+bootstraps the room. The Singapore stack was deployed and externally verified
+on **September 23, 2026**: TLS verification, rejected wrong passwords, two-client
+messaging, and `/quit` all passed. Availability follows the session lifecycle;
+the instance automatically stops after roughly three hours.
+
+## AWS architecture
+
+The hosting target is **Asia Pacific (Singapore), `ap-southeast-1`**, with one
+server that runs only during chat sessions.
+
+```mermaid
+flowchart TD
+    Clients[You and friends: CLI clients] -->|TLS on TCP 5000| Internet[Internet gateway]
+    Admin[Your computer] -->|SSH on TCP 22| Internet
+    subgraph AWS[Singapore: ap-southeast-1]
+        subgraph VPC[Dedicated VPC and one public subnet]
+            Internet --> SG[Security group: explicit source IPs]
+            SG --> EC2[t4g.small: Ubuntu 24.04 ARM64]
+            EC2 --- Disk[8 GiB encrypted gp3 disk]
+        end
+    end
+```
+
+| Component | Configuration |
+| --- | --- |
+| Compute | One `t4g.small`, standard CPU credit mode |
+| Operating system | Ubuntu 24.04 ARM64, resolved from Canonical's public AMI parameter |
+| Storage | 8 GiB encrypted gp3 root disk, deleted on instance termination |
+| Network | Public subnet, internet gateway, auto-assigned public IPv4 |
+| Firewall | SSH from the administrator's `/32`; chat initially from the same IP, with friends added explicitly |
+| Server | Pinned application revision, systemd service, TLS, shared room password |
+| Secrets | Random room password and private key on the instance; neither is a stack output |
+| Session limit | Instance automatically stops about three hours after its timer starts on each boot |
+
+The template creates no load balancer, NAT gateway, database, or Elastic IP.
+Messages stay in memory. This single-server design accepts downtime if the
+instance stops or fails.
+
+At startup, the room generates a seven-day certificate for the instance's current
+public IP. Retrieve its **public certificate** again after a restart; the private
+key stays on the instance. A new public IP may be assigned after a stop/start.
+The shared password persists on the encrypted disk until you rotate it or delete
+the instance. The AWS guide explains retrieving it privately and inviting friends.
+
+### Running costs
+
+Planning estimates checked September 23, 2026, for one server, one public IPv4,
+an 8 GiB disk retained all month, and light text traffic:
+
+| Runtime per month | With T4g compute trial | Without compute trial, at estimated current rates |
+| --- | --- | --- |
+| 100 hours | About $1–$2 | About $3–$4 |
+| 730 hours | About $4–$5 | About $20 |
+
+AWS currently advertises 750 aggregate `t4g.small` instance hours per month
+through **December 31, 2026**, including Singapore. Storage and public IPv4 are
+separate charges. IPv4 costs $0.005/hour; allow roughly $1/month for this disk.
+Estimates exclude taxes, excess transfer, and optional resources. Promotional
+credits may cover eligible usage while valid; they do not make hosting free
+indefinitely. Confirm the regional quote and eligibility before launch.
+
+Stop the **EC2 instance** after chatting; `/quit` only disconnects a client.
+Storage still accrues charges while stopped. The three-hour timer is a runtime
+guard, not a billing cap. Configure a $5 budget alert separately; alerts are not
+created by the template and do not automatically stop spending.
+
+Sources: [AWS T4g trial](https://aws.amazon.com/ec2/faqs/),
+[IPv4 pricing](https://aws.amazon.com/vpc/pricing/),
+[EBS pricing](https://aws.amazon.com/ebs/pricing/),
+[Singapore compute estimate](https://calculator.holori.com/aws/ec2/t4g.small?os=Linux&region=ap-southeast-1&upfront=no-upfront).
 
 ## Our development process
 
@@ -91,7 +160,7 @@ and then improving the experience around them.
 | Visual refinement | Clear submitted input to avoid showing it twice | Implemented |
 | Protocol reliability | Length-prefixed JSON, bounded messages, and clean disconnects | Implemented |
 | Private room access | Verified TLS, shared password, and login/message limits | Implemented; local integration tests |
-| AWS hosting | EC2 setup guide and service configuration | Prepared; not deployed |
+| AWS hosting | Singapore CloudFormation stack, automatic setup, and session auto-stop | Deployed; external TLS, authentication, chat, and quit checks passed |
 
 The interface lives in `chat_ui.py`. The initial visual updates left the socket
 code unchanged. The security phase adds `transport.py` for TLS/login and

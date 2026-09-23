@@ -2,7 +2,150 @@
 
 This guide uses an Ubuntu EC2 instance and a short-lived, self-signed TLS
 certificate that friends explicitly trust. You do not need a domain name.
-The app has not been deployed to AWS automatically.
+The deployment target is **Singapore (`ap-southeast-1`)**. The template below
+prepares the infrastructure and starts the room. The `neon-chat` stack was
+deployed on September 23, 2026, and passed external TLS, wrong-password,
+two-client messaging, and quit checks. The session instance auto-stops after
+roughly three hours; deployment verification does not imply continuous uptime.
+
+## Recommended: launch the prepared CloudFormation stack
+
+[`stack.json`](stack.json) creates a dedicated VPC, one public subnet and internet
+gateway, restricted security group, and a single Ubuntu 24.04 ARM64 `t4g.small`.
+It uses an encrypted 8 GiB gp3 root disk, IMDSv2, standard CPU credits, and an
+auto-assigned public IP. There is no NAT gateway, load balancer, or database.
+
+The first boot installs the app at the reviewed commit in `AppRevision`, creates
+a random room password in `secrets/room-password` with mode `0600`, and enables
+the systemd service. The password and private key are never stack outputs or
+user-data parameters. The service refreshes the certificate for the current
+public IP on each start. Download the new public certificate after a restart.
+
+A systemd timer stops the **instance** about three hours after the timer starts
+on each boot. It does not delete the disk or end storage charges. Manual
+`systemctl stop neon-chat` only stops the app, and `/quit` only leaves the room.
+
+### Authenticate and supply the launch inputs
+
+Install AWS CLI v2 and authenticate on your own computer:
+
+```bash
+aws login --profile neon-chat --region ap-southeast-1
+aws sts get-caller-identity --profile neon-chat --region ap-southeast-1
+```
+
+Use your existing authenticated profile instead if appropriate. AWS IAM Identity
+Center users should use their configured SSO profile. The deploying identity
+needs EC2/VPC, CloudFormation, and SSM `GetParameters` access to the public Ubuntu
+AMI parameter. The template creates no IAM roles.
+
+You also need:
+
+- An EC2 SSH key pair **in Singapore**, with its private key kept on your computer.
+- Your computer's public IPv4 address as `/32` for `AdminCidr`.
+- Optional `ChatCidr`. Leaving it empty permits chat from your admin IP only;
+  add your friends' public IPs explicitly after initial verification.
+
+From the repository root, replace the example IP and key name with your values:
+
+```bash
+aws cloudformation validate-template \
+  --profile neon-chat --region ap-southeast-1 \
+  --template-body file://deploy/stack.json
+
+aws cloudformation deploy \
+  --profile neon-chat --region ap-southeast-1 \
+  --stack-name neon-chat \
+  --template-file deploy/stack.json \
+  --parameter-overrides AdminCidr=YOUR_PUBLIC_IP/32 KeyPairName=YOUR_KEY_PAIR \
+  --tags Project=neon-chat
+
+aws cloudformation describe-stacks \
+  --profile neon-chat --region ap-southeast-1 --stack-name neon-chat \
+  --query 'Stacks[0].Outputs' --output table
+```
+
+**Deploying provisions billable resources.** Check your credit expiry and Free
+versus Paid plan first. The cost estimates in the README are planning figures,
+not a price guarantee. Set your budget alert separately.
+
+### Verify startup before inviting anyone
+
+Use the public IP from the stack outputs and your private key:
+
+```bash
+ssh -i /path/to/key.pem ubuntu@SERVER_IP
+sudo cloud-init status --wait
+sudo systemctl status neon-chat --no-pager
+sudo systemctl list-timers neon-chat-autostop.timer --no-pager
+```
+
+Stack completion means the EC2 resource exists, not that installation or TLS has
+succeeded. Check `/var/log/cloud-init-output.log` and `journalctl -u neon-chat`
+if setup fails. Allow package installation a few minutes. Confirm the SSH host
+key through your trusted AWS access before accepting it; do not disable host-key
+checking.
+
+On your **local computer**, retrieve the public certificate and the room password
+into Git-ignored private files. Never copy the server's TLS private key:
+
+```bash
+mkdir -p certs secrets
+chmod 700 secrets
+scp -i /path/to/key.pem ubuntu@SERVER_IP:/home/ubuntu/TCP-Chat/certs/server.crt certs/aws-server.crt
+(umask 077; scp -i /path/to/key.pem ubuntu@SERVER_IP:/home/ubuntu/TCP-Chat/secrets/room-password secrets/aws-room-password)
+chmod 600 secrets/aws-room-password
+python client.py --host SERVER_IP --ca certs/aws-server.crt
+```
+
+Read the password privately from `secrets/aws-room-password` to fill the masked
+prompt. Keep it out of chat transcripts, screenshots, commits, and terminal logs.
+Test two client sessions and `/quit` before inviting friends. Share only the
+public certificate and room password with them through a trusted private channel.
+
+### Admit friends and manage session runtime
+
+Use the security group ID from the outputs. Repeat for each friend's public IP:
+
+```bash
+aws ec2 authorize-security-group-ingress \
+  --profile neon-chat --region ap-southeast-1 \
+  --group-id SECURITY_GROUP_ID --protocol tcp --port 5000 --cidr FRIEND_PUBLIC_IP/32
+```
+
+Keep TCP 22 limited to your own public IP. Removing an IP rule later revokes
+network access; the shared password is not an individual account system.
+
+If you intentionally need another three hours, restart the timer over SSH:
+
+```bash
+sudo systemctl restart neon-chat-autostop.timer
+```
+
+To finish early, stop the instance from your computer:
+
+```bash
+aws ec2 stop-instances --profile neon-chat --region ap-southeast-1 --instance-ids INSTANCE_ID
+```
+
+After a stop/start, query EC2 for the **current** public IP; CloudFormation's
+launch-time output may be stale:
+
+```bash
+aws ec2 describe-instances --profile neon-chat --region ap-southeast-1 \
+  --instance-ids INSTANCE_ID --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
+```
+
+The service starts and generates a fresh certificate. Retrieve it again before
+connecting. The room password persists until you rotate it. If finished
+permanently, deleting the `neon-chat` stack terminates the instance and deletes
+its root disk, including its secrets. Keep anything you need before deletion.
+SSH keys imported separately are not removed by stack deletion.
+
+## Manual setup alternative
+
+The remaining instructions are for creating an instance yourself instead of
+using the template. **Do not run them again on a bootstrapped stack instance.**
 
 ## 1. Create the instance and network rules
 
