@@ -172,11 +172,12 @@ export default function App() {
                   environment for you.
                 </p>
                 <Command
-                  text={install}
+                  text={install[platform]}
                   label="Copy Neon Chat installation command"
                 />
                 <p className="hint">
-                  If the command isn’t found afterward, run{" "}
+                  This runs the project’s installer with an ASCII welcome
+                  banner. If the command isn’t found afterward, run{" "}
                   <code>uv tool update-shell</code> and reopen your terminal.
                 </p>
               </div>

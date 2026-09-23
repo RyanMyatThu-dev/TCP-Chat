@@ -1,5 +1,10 @@
 export const repository = "https://github.com/RyanMyatThu-dev/TCP-Chat";
-export const install = `uv tool install --python 3.12 ${repository}/archive/refs/heads/main.zip`;
+const installerRoot =
+  "https://raw.githubusercontent.com/RyanMyatThu-dev/TCP-Chat/main/web/public";
+export const install = {
+  unix: `curl -fsSL ${installerRoot}/install.sh | sh`,
+  windows: `irm ${installerRoot}/install.ps1 | iex`,
+};
 export const uvCommands = {
   unix: "curl -LsSf https://astral.sh/uv/install.sh | sh",
   windows:

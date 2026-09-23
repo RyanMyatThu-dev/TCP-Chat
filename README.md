@@ -26,6 +26,20 @@ uses cyan and magenta accents. Connections use verified TLS encryption.
 Install [uv](https://docs.astral.sh/uv/getting-started/installation/) once, then:
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/RyanMyatThu-dev/TCP-Chat/main/web/public/install.sh | sh
+```
+
+The installer shows the ASCII NEON logo, installs the app, and prints host/join
+commands after success. It runs the repository's shell script; you can inspect
+[the installer](web/public/install.sh) before running it. On Windows, use PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/RyanMyatThu-dev/TCP-Chat/main/web/public/install.ps1 | iex
+```
+
+For a direct install without the banner, use:
+
+```bash
 uv tool install --python 3.12 https://github.com/RyanMyatThu-dev/TCP-Chat/archive/refs/heads/main.zip
 ```
 
@@ -57,7 +71,7 @@ The AWS service must be running; friends cannot start the instance themselves.
 - Guest departures leave the room open. A new host session gets a new code.
 - `--name Raven` skips the alias prompt; `NO_COLOR=1 neon-chat host` disables color.
 
-To update, rerun the install command with `--reinstall`.
+To update, rerun the installer. For the direct uv command, add `--reinstall`.
 
 ## Features
 

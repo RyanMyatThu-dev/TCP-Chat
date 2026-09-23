@@ -16,7 +16,7 @@ test("installation and join path work without sending invitation codes", async (
     .getByRole("button", { name: "Copy Neon Chat installation command" })
     .click();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toContain(
-    "uv tool install",
+    "install.ps1",
   );
   await page.getByRole("button", { name: /Join a friend/ }).click();
   await page.getByLabel("Your friend’s room code").fill("bad");
