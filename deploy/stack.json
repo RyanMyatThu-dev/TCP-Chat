@@ -23,7 +23,7 @@
     },
     "AppRevision": {
       "Type": "String",
-      "Default": "5c8f0ec93cbda69dfa3738d75fcac95c0f63f233",
+      "Default": "34aa95f74b27de6bb2acfed08db3dbb34b1bbdf3",
       "AllowedPattern": "[0-9a-f]{40}",
       "Description": "Reviewed application commit to deploy (not a moving branch)."
     }

@@ -718,7 +718,6 @@ footer .wordmark {
   top: 0;
   width: 28px;
   height: 28px;
-  border: 1px solid #b5f8dc70;
   z-index: 100;
   pointer-events: none;
   opacity: 0;
@@ -962,6 +961,75 @@ footer .wordmark {
 }
 @media (pointer: coarse) {
   .cursor-ring {
+    display: none;
+  }
+}
+
+.cursor-effects {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  overflow: hidden;
+}
+.cursor-ring span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 1px dashed #b5f8dc90;
+  border-radius: 50%;
+  animation: spin 12s linear infinite;
+  transition:
+    scale 0.2s,
+    border-color 0.2s;
+}
+.cursor-ring span::after {
+  content: "";
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  background: var(--cyan);
+  top: -2px;
+  left: 12px;
+}
+.cursor-interactive span {
+  scale: 1.4;
+  border-color: var(--cyan);
+}
+.pixel-burst {
+  position: absolute;
+  width: 0;
+  height: 0;
+}
+.pixel-burst i {
+  position: absolute;
+  display: block;
+  width: 5px;
+  height: 5px;
+  margin: -2px;
+  background: var(--cyan);
+  animation: pixel-scatter 480ms steps(8, end) forwards;
+}
+.pixel-burst i:nth-child(even) {
+  width: 3px;
+  height: 3px;
+  background: #e7eae8;
+}
+@keyframes pixel-scatter {
+  0% {
+    transform: translate(0, 0) scale(1.5);
+    opacity: 1;
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--dx), var(--dy)) scale(0.3);
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce), (pointer: coarse) {
+  .cursor-effects {
     display: none;
   }
 }

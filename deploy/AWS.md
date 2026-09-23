@@ -48,8 +48,7 @@ console output; never disable host-key checking.
 Bootstrap installs a pinned revision, a private legacy password, persistent TLS
 authority, and the service. Since the Elastic IP may attach after bootstrap,
 restart `neon-chat` after stack completion to issue a leaf for the stable address.
-The default AppRevision must be updated to a reviewed room-capable commit when
-using this template for a fresh deployment.
+The default AppRevision pins the reviewed invitation-room release.
 
 A new deployment has a new identity: retrieve **only**
 `/home/ubuntu/TCP-Chat/secrets/authority/ca.crt` to `neon_chat/service-ca.crt`, and

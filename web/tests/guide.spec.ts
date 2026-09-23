@@ -61,3 +61,29 @@ test("responsive layout and reduced motion", async ({ page }) => {
     );
   expect(backgrounds.some((value) => value.includes("gradient"))).toBe(false);
 });
+
+test("cursor eases toward movement, click pixels expire, and favicon loads", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.mouse.move(100, 100);
+  await expect(page.locator(".cursor-ring")).toHaveCSS("opacity", "1");
+  await page.mouse.move(500, 250);
+  await expect
+    .poll(async () => {
+      const box = await page.locator(".cursor-ring").boundingBox();
+      return Math.abs((box?.x ?? 0) - 486);
+    })
+    .toBeLessThan(1);
+  await page.mouse.click(500, 250);
+  await expect(page.locator(".pixel-burst i")).toHaveCount(8);
+  await expect(page.locator(".pixel-burst")).toHaveCount(0);
+  const favicon = await page.locator('link[rel="icon"]').getAttribute("href");
+  const response = await page.request.get(favicon!);
+  expect(response.ok()).toBe(true);
+  expect(await response.text()).toContain("<svg");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.mouse.click(500, 250);
+  await expect(page.locator(".cursor-effects")).toBeHidden();
+  await expect(page.locator(".pixel-burst")).toHaveCount(0);
+});
