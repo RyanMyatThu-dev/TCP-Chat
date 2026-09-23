@@ -1,36 +1,90 @@
-"""TCP chat client - learner starter."""
+"""NEON / CHAT client: verified TLS and shared room authentication."""
 
-import socket
-import threading
+import argparse
+import asyncio
+import ssl
+
 from prompt_toolkit.patch_stdout import patch_stdout
+
 from chat_ui import ChatUI
-
-HOST = "127.0.0.1"
-PORT = 5000
-BUFFER_SIZE = 1024
-ui = ChatUI()
-user_name = ""
-
-def receive_message(connection):
-    with connection:
-        while True:
-            message = connection.recv(BUFFER_SIZE).decode()
-            ui.message(message)
+from framing import ProtocolError, read_frame, send_frame, valid_alias, valid_text
+from transport import AuthenticationError, close_writer, connect
 
 
-def run_client():
+async def receive_messages(reader, ui):
+    while True:
+        message = await read_frame(reader)
+        if message is None:
+            ui.notice("Connection closed. Run the client again to reconnect.")
+            return
+        kind = message["type"]
+        if kind == "chat" and valid_alias(message.get("name")) and valid_text(message.get("text")):
+            ui.message(message["name"], message["text"])
+        elif kind in {"notice", "error"} and isinstance(message.get("message"), str):
+            ui.notice(message["message"])
+            if kind == "error":
+                return
+        else:
+            raise ProtocolError("The server sent an unexpected message.")
+
+
+async def send_messages(writer, ui):
+    while True:
+        try:
+            text = await ui.compose()
+        except (EOFError, KeyboardInterrupt):
+            return
+        if text.strip() == "/quit":
+            await asyncio.wait_for(send_frame(writer, {"type": "quit"}), timeout=5)
+            return
+        if not valid_text(text):
+            ui.notice("Use 1–4000 UTF-8 bytes of text, without control characters.")
+            continue
+        await asyncio.wait_for(send_frame(writer, {"type": "chat", "text": text}), timeout=5)
+
+
+async def run_client(arguments):
+    ui = ChatUI()
     ui.welcome()
-    user_name = ui.identity()
-    
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client:
-        client.connect((HOST, PORT))
-        ui.connected(HOST, PORT)
-        client.sendall(user_name.encode())
-        receiver_thread = threading.Thread(target=receive_message, args=(client,))
-        receiver_thread.start()
-        with patch_stdout():
-            while True:
-                user_input = ui.compose()
-                client.sendall(user_input.encode())
+    name = await ui.identity()
+    password = await ui.password()
+    ui.notice("Connecting securely…")
+    reader, writer = await connect(arguments.host, arguments.port, name, password, arguments.ca)
+    del password
+    ui.connected(arguments.host, arguments.port)
+    with patch_stdout():
+        receiver = asyncio.create_task(receive_messages(reader, ui))
+        sender = asyncio.create_task(send_messages(writer, ui))
+        tasks = {receiver, sender}
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await close_writer(writer)
+    ui.notice("Disconnected. See you on the next signal.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--host", default="localhost", help="Server DNS name or IP matching its certificate")
+    parser.add_argument("--port", type=int, default=5000)
+    parser.add_argument("--ca", help="Trusted PEM certificate; omit for a publicly trusted certificate")
+    arguments = parser.parse_args()
+    try:
+        asyncio.run(run_client(arguments))
+    except (KeyboardInterrupt, EOFError):
+        print("\nDisconnected.")
+    except ssl.SSLCertVerificationError:
+        parser.exit(1, "Certificate verification failed. Check the server name, certificate expiry, and --ca file.\n")
+    except (OSError, AuthenticationError, ProtocolError, ValueError) as error:
+        # Server-provided error text must not inject terminal control sequences.
+        from chat_ui import clean
+        parser.exit(1, f"Could not join: {clean(str(error))}\n")
+
+
 if __name__ == "__main__":
-    run_client()
+    main()

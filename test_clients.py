@@ -1,108 +1,73 @@
-"""Launch several concurrent clients against the TCP chat server.
-
-Run ``python server.py`` in one terminal, then run this file in another.
-This is a manual integration test: client-side results appear here, while the
-server terminal shows how the TCP byte stream was divided between recv() calls.
-"""
+"""Manual TLS room smoke test: all clients must receive every test message."""
 
 import argparse
-import socket
-import threading
-import time
+import asyncio
+import getpass
 
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 5000
+from framing import ProtocolError, read_frame, send_frame
+from transport import AuthenticationError, close_writer, connect
 
 
-def run_test_client(
-    client_id: int,
-    host: str,
-    port: int,
-    message_count: int,
-    delay: float,
-    start_barrier: threading.Barrier,
-) -> tuple[int, bool, str]:
-    """Connect one client, wait for its peers, and send identified messages."""
+async def run(arguments, password):
+    clients = []
+    expected = {
+        (f"test_{client}", f"message_{message}")
+        for client in range(1, arguments.clients + 1)
+        for message in range(1, arguments.messages + 1)
+    }
+
+    async def send(writer):
+        for number in range(1, arguments.messages + 1):
+            await send_frame(writer, {"type": "chat", "text": f"message_{number}"})
+            await asyncio.sleep(arguments.delay)
+
+    async def receive(reader):
+        remaining = set(expected)
+        while remaining:
+            message = await read_frame(reader)
+            if message is None:
+                raise RuntimeError("Connection closed before all broadcasts arrived.")
+            if message['type'] == 'error':
+                raise RuntimeError(message.get('message', 'Server error'))
+            if message['type'] == 'chat':
+                remaining.discard((message.get('name'), message.get('text')))
+
+    tasks = []
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client:
-            client.settimeout(5)
-            client.connect((host, port))
-            print(f"Client {client_id}: connected")
-
-            # All clients begin sending at approximately the same time.
-            start_barrier.wait(timeout=5)
-
-            for message_number in range(1, message_count + 1):
-                message = f"client={client_id} message={message_number}\n"
-                client.sendall(message.encode("utf-8"))
-                time.sleep(delay)
-
-        return client_id, True, f"sent {message_count} messages"
-    except (OSError, threading.BrokenBarrierError) as error:
-        return client_id, False, f"{type(error).__name__}: {error}"
+        for number in range(1, arguments.clients + 1):
+            clients.append(await connect(
+                arguments.host, arguments.port, f"test_{number}", password, arguments.ca))
+        for reader, writer in clients:
+            tasks.extend([asyncio.create_task(send(writer)), asyncio.create_task(receive(reader))])
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=30 + arguments.messages * arguments.delay)
+        print(f"PASS: all {arguments.clients} clients received all {len(expected)} chat messages over TLS.")
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*(close_writer(writer) for _, writer in clients))
 
 
-def parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Connect multiple concurrent test clients to the server."
-    )
-    parser.add_argument("--host", default=DEFAULT_HOST)
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--clients", type=int, default=5)
-    parser.add_argument("--messages", type=int, default=3)
-    parser.add_argument("--delay", type=float, default=0.1)
-    return parser.parse_args()
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--host', default='localhost')
+    parser.add_argument('--port', type=int, default=5000)
+    parser.add_argument('--ca', help='Trusted server certificate')
+    parser.add_argument('--clients', type=int, default=5)
+    parser.add_argument('--messages', type=int, default=3)
+    parser.add_argument('--delay', type=float, default=.1)
+    arguments = parser.parse_args()
+    if not 1 <= arguments.clients <= 10 or arguments.messages < 1 or arguments.delay < 0:
+        parser.error('Use 1–10 clients, at least one message, and a nonnegative delay.')
+    try:
+        password = getpass.getpass('Room password: ')
+        asyncio.run(run(arguments, password))
+    except (OSError, AuthenticationError, ProtocolError, RuntimeError) as error:
+        from chat_ui import clean
+        parser.exit(1, f"FAIL: {clean(str(error))}\n")
+    except (KeyboardInterrupt, EOFError):
+        parser.exit(1, '\nCancelled.\n')
 
 
-def main() -> None:
-    arguments = parse_arguments()
-
-    if arguments.clients < 1 or arguments.messages < 1:
-        raise SystemExit("--clients and --messages must both be at least 1")
-    if arguments.delay < 0:
-        raise SystemExit("--delay cannot be negative")
-
-    barrier = threading.Barrier(arguments.clients)
-    results: list[tuple[int, bool, str]] = []
-    results_lock = threading.Lock()
-
-    def worker(client_id: int) -> None:
-        result = run_test_client(
-            client_id,
-            arguments.host,
-            arguments.port,
-            arguments.messages,
-            arguments.delay,
-            barrier,
-        )
-        with results_lock:
-            results.append(result)
-
-    threads = [
-        threading.Thread(target=worker, args=(client_id,))
-        for client_id in range(1, arguments.clients + 1)
-    ]
-
-    print(
-        f"Starting {arguments.clients} clients against "
-        f"{arguments.host}:{arguments.port}"
-    )
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-
-    print("\nResults")
-    for client_id, succeeded, detail in sorted(results):
-        status = "PASS" if succeeded else "FAIL"
-        print(f"{status} client {client_id}: {detail}")
-
-    failures = sum(not succeeded for _, succeeded, _ in results)
-    if failures:
-        raise SystemExit(f"{failures} client(s) failed")
-
-    print(f"All {arguments.clients} clients completed successfully")
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

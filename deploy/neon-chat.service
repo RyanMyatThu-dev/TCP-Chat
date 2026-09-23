@@ -1,0 +1,23 @@
+[Unit]
+Description=NEON CHAT temporary TLS room
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/TCP-Chat
+ExecStart=/home/ubuntu/TCP-Chat/.venv/bin/python -u server.py --host 0.0.0.0 --port 5000 --cert certs/server.crt --key certs/server.key --password-file secrets/room-password
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+KillSignal=SIGINT
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
